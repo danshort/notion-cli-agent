@@ -187,20 +187,39 @@ export function registerPagesCommand(program: Command): void {
           };
         }
 
+        // Fetch schema if we need it for --prop or --clear-prop
+        let db: { properties: Record<string, { type: string }> } | null = null;
+        if (options.prop || (options.clearProp && options.clearProp.length > 0)) {
+          try {
+            const pg = await client.get(`pages/${pageId}`) as Page;
+            const parentDbId = getParentDatabaseId(pg.parent);
+            if (parentDbId) {
+              db = await getDatabaseSchema(client, parentDbId) as {
+                properties: Record<string, { type: string }>;
+              };
+            }
+          } catch {
+            // If we can't fetch schema, fall back to heuristic parsing
+          }
+        }
+
         if (options.prop) {
-          const parsed = parseProperties(options.prop);
+          // Build a property-name → type map from the database schema
+          const schemaTypes: Record<string, string> | undefined = db
+            ? Object.fromEntries(
+                Object.entries(db.properties).map(([name, prop]) => [name, prop.type])
+              )
+            : undefined;
+          const parsed = parseProperties(options.prop, schemaTypes);
           Object.assign(properties, parsed);
         }
 
         // Handle --clear-prop: fetch schema to determine property type
         if (options.clearProp && options.clearProp.length > 0) {
-          const page = await client.get(`pages/${pageId}`) as Page;
-          const parentDbId = getParentDatabaseId(page.parent);
-          if (!parentDbId) {
+          if (!db) {
             console.error('Error: --clear-prop requires a database-backed page');
             process.exit(1);
           }
-          const db = await getDatabaseSchema(client, parentDbId);
           for (const rawName of options.clearProp) {
             const resolved = resolvePropertyName(db.properties, rawName);
             if (!resolved) {
