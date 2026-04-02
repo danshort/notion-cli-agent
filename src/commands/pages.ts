@@ -68,29 +68,37 @@ export function registerPagesCommand(program: Command): void {
           : { database_id: options.parent };
 
         const properties: Record<string, unknown> = {};
-        
+
+        // Fetch database schema once if parent is a database and we need it
+        // (for title auto-detection or property type resolution)
+        let db: { properties: Record<string, { type: string }> } | null = null;
+        const needsSchema = options.parentType === 'database' && (
+          (options.title && !options.titleProp) || options.prop
+        );
+        if (needsSchema) {
+          try {
+            db = await getDatabaseSchema(client, options.parent) as {
+              properties: Record<string, { type: string }>;
+            };
+          } catch {
+            // Fall back to heuristic parsing / common defaults
+          }
+        }
+
         // Handle title - auto-detect title property name from database schema
         if (options.title) {
           let titlePropName = options.titleProp;
-          
-          // If not specified and parent is database, fetch schema to find title property
-          if (!titlePropName && options.parentType === 'database') {
-            try {
-              const db = await getDatabaseSchema(client, options.parent) as {
-                properties: Record<string, { type: string }>;
-              };
-              // Find the property with type "title"
-              for (const [name, prop] of Object.entries(db.properties)) {
-                if (prop.type === 'title') {
-                  titlePropName = name;
-                  break;
-                }
+
+          // If not specified and parent is database, use schema to find title property
+          if (!titlePropName && db) {
+            for (const [name, prop] of Object.entries(db.properties)) {
+              if (prop.type === 'title') {
+                titlePropName = name;
+                break;
               }
-            } catch {
-              // Fall back to common defaults
             }
           }
-          
+
           // Use detected name or fall back based on parent type
           // Non-DB pages (page/workspace parent) use 'title'; DB pages default to 'Name'
           titlePropName = titlePropName || (options.parentType === 'page' ? 'title' : 'Name');
@@ -101,7 +109,13 @@ export function registerPagesCommand(program: Command): void {
 
         // Handle additional properties
         if (options.prop) {
-          const parsed = parseProperties(options.prop);
+          // Build a property-name → type map from the database schema
+          const schemaTypes: Record<string, string> | undefined = db
+            ? Object.fromEntries(
+                Object.entries(db.properties).map(([name, prop]) => [name, prop.type])
+              )
+            : undefined;
+          const parsed = parseProperties(options.prop, schemaTypes);
           Object.assign(properties, parsed);
         }
 
